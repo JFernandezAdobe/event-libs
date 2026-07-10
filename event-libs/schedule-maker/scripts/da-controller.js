@@ -176,6 +176,36 @@ async function writeSheet(org, repo, path, rows, { etag, create } = {}) {
   return { ok: true, status: resp.status, etag: resp.headers.get('ETag') };
 }
 
+// Reads a plain sheet (no schedule-specific row transforms) — used for the
+// schedule→docs reverse index sheet.
+async function readRawSheet(org, repo, path) {
+  const result = await daFetch(`/source/${org}/${repo}${path}`, getHeaders('GET'));
+  if (!result.ok) return result;
+  return { ok: true, rows: result.data?.data ?? [], etag: result.etag };
+}
+
+// Writes a plain sheet as-is. The reverse index is derived state (rebuilt on
+// every sync), so writes are unconditional — a concurrent sync writes the same
+// derived rows, so last-write-wins is harmless here.
+async function writeRawSheet(org, repo, path, rows) {
+  const payload = JSON.stringify({
+    ':type': 'sheet', ':sheetname': 'data', total: rows.length, limit: rows.length, offset: 0, data: rows,
+  });
+  const url = `${DA_ADMIN_ORIGIN}/source/${org}/${repo}${path}`;
+  const formData = new FormData();
+  formData.append('data', new Blob([payload], { type: 'application/json' }), 'blob');
+  const headers = new Headers();
+  if (daToken) headers.append('Authorization', `Bearer ${daToken}`);
+  let resp;
+  try {
+    resp = await doFetch(url, { method: 'POST', headers, body: formData });
+  } catch (err) {
+    window.lana?.log(`DA writeRawSheet network error: ${err} — ${url}`);
+    return { ok: false, status: 0 };
+  }
+  return { ok: resp.ok, status: resp.status };
+}
+
 const MAX_WRITE_RETRIES = 4;
 const CONFLICT_ERROR = 'Conflict: the schedule sheet was changed by someone else. Please retry.';
 
@@ -301,7 +331,7 @@ async function fetchText(org, repo, path) {
       }
       return { ok: false };
     }
-    if (resp.ok) return { ok: true, text: await resp.text() };
+    if (resp.ok) return { ok: true, text: await resp.text(), etag: resp.headers.get('ETag') };
     if (resp.status === 404) return { ok: true, text: '' };
     if (resp.status === 429 || resp.status >= 500) {
       if (attempt < MAX_FETCH_ATTEMPTS - 1) {
@@ -377,12 +407,18 @@ export async function syncSchedules(org, repo, eventFolder, scanPath = null) {
       error: `Sync aborted: ${unreadable} document(s) could not be read (rate limited or unavailable). Please retry — lower SCAN_CONCURRENCY if this persists.`,
     };
   }
-  for (const finds of perDocFinds) {
+  // Build the reverse index (scheduleId → docs) while collecting ids.
+  // perDocFinds is index-aligned with docFiles, so docFiles[i] is the source doc.
+  const refIndex = new Map(); // scheduleId → Set(docPath)
+  perDocFinds.forEach((finds, i) => {
+    const docPath = docFiles[i];
     for (const decoded of finds) {
       foundIds.add(decoded.scheduleId);
       if (!foundData.has(decoded.scheduleId)) foundData.set(decoded.scheduleId, decoded);
+      if (!refIndex.has(decoded.scheduleId)) refIndex.set(decoded.scheduleId, new Set());
+      refIndex.get(decoded.scheduleId).add(docPath);
     }
-  }
+  });
 
   // Reclassification is deterministic given foundIds, so it is safe to re-run on
   // a 412 conflict. Read both sheets, recompute, and write both conditionally.
@@ -435,6 +471,13 @@ export async function syncSchedules(org, repo, eventFolder, scanPath = null) {
       movedToActive = toActivate.length;
       movedToDraft = toDeactivate.length;
       newlyDiscovered = discovered;
+      // Persist the reverse index for the "Update pages" propagation feature.
+      // Best-effort: a failure here doesn't fail the sync (the index is derived
+      // and propagation re-verifies each doc before writing).
+      const refRows = [...refIndex.entries()]
+        .map(([id, paths]) => ({ scheduleId: id, paths: JSON.stringify([...paths]) }));
+      // eslint-disable-next-line no-await-in-loop
+      await writeRawSheet(org, repo, `${basePath}/schedule-refs.json`, refRows);
       return {
         ok: true,
         data: {
@@ -533,6 +576,102 @@ async function removeScheduleFromDocs(org, repo, affectedPaths, scheduleId) {
     if (daToken) headers.append('Authorization', `Bearer ${daToken}`);
     await doFetch(url, { method: 'POST', headers, body: formData });
   }));
+}
+
+// Reads the reverse index and returns the doc paths recorded for a schedule.
+// The index is refreshed on each sync, so results reflect the last sync — a
+// link pasted since then won't appear until the next sync.
+export async function getScheduleRefs(org, repo, eventFolder, scheduleId) {
+  const basePath = eventFolder.startsWith('/') ? eventFolder : `/${eventFolder}`;
+  const res = await readRawSheet(org, repo, `${basePath}/schedule-refs.json`);
+  if (!res.ok) return { ok: true, data: [] };
+  const row = (res.rows || []).find((r) => r.scheduleId === scheduleId);
+  if (!row?.paths) return { ok: true, data: [] };
+  try {
+    return { ok: true, data: JSON.parse(row.paths) };
+  } catch {
+    return { ok: true, data: [] };
+  }
+}
+
+const escapeHtml = (s) => String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Mirrors ScheduleURLUtility.copyScheduleToClipboard's link text.
+function scheduleLinkText(schedule) {
+  const { title, modificationTime } = schedule;
+  const date = modificationTime
+    ? new Date(modificationTime).toLocaleString('en-US', {
+      weekday: 'long', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+    })
+    : '';
+  return date ? `Schedule: ${title} – ${date}` : `Schedule: ${title}`;
+}
+
+// Conditional write of a document's source (If-Match). Source-only — this never
+// previews or publishes; authors publish the pages themselves.
+async function writeDoc(org, repo, filePath, content, { etag } = {}) {
+  const url = `${DA_ADMIN_ORIGIN}/source/${org}/${repo}${filePath}`;
+  const mimeType = filePath.endsWith('.json') ? 'application/json' : 'text/html';
+  const formData = new FormData();
+  formData.append('data', new Blob([content], { type: mimeType }), filePath.split('/').pop());
+  const headers = new Headers();
+  if (daToken) headers.append('Authorization', `Bearer ${daToken}`);
+  if (etag) headers.append('If-Match', etag);
+  let resp;
+  try {
+    resp = await doFetch(url, { method: 'POST', headers, body: formData });
+  } catch {
+    return { ok: false, status: 0 };
+  }
+  return { ok: resp.ok, status: resp.status };
+}
+
+// Rewrites the embedded schedule link in each doc so it reflects the current
+// schedule (new base64 payload + refreshed link text). Source-only, conditional
+// per doc, retried on 412. Docs where the link is no longer present (stale index
+// entry) are skipped, not failed. `schedule` must be the encode-ready object
+// (same shape ScheduleURLUtility encodes). Returns { updated, skipped, failed }.
+export async function propagateScheduleToDocs(org, repo, schedule, paths) {
+  const { scheduleId } = schedule;
+  if (!scheduleId || !paths?.length) return { ok: true, data: { updated: [], skipped: [], failed: [] } };
+
+  const newB64 = btoa(JSON.stringify(schedule));
+  const newText = escapeHtml(scheduleLinkText(schedule));
+  const anchorRe = /(<a\b[^>]*href=["']([^"']*)["'][^>]*>)([\s\S]*?)(<\/a>)/gi;
+  const paramRe = /([?&]schedule=)[A-Za-z0-9+/=%-]{20,}/i;
+
+  const updated = [];
+  const skipped = [];
+  const failed = [];
+
+  await mapWithConcurrency(paths, SCAN_CONCURRENCY, async (filePath) => {
+    for (let attempt = 0; attempt <= MAX_WRITE_RETRIES; attempt += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const doc = await fetchText(org, repo, filePath);
+      if (!doc.ok) { failed.push(filePath); return; }
+      if (!doc.text) { skipped.push(filePath); return; } // doc gone since sync
+
+      let changed = false;
+      const next = doc.text.replace(anchorRe, (m, openTag, href, inner, closeTag) => {
+        const pm = href.match(/[?&]schedule=([A-Za-z0-9+/=%-]{20,})/i);
+        if (!pm || !matchesScheduleId(pm[1], scheduleId)) return m;
+        changed = true;
+        const newOpen = openTag.replace(paramRe, `$1${encodeURIComponent(newB64)}`);
+        return `${newOpen}${newText}${closeTag}`;
+      });
+      if (!changed) { skipped.push(filePath); return; } // link not present (stale index)
+
+      // eslint-disable-next-line no-await-in-loop
+      const w = await writeDoc(org, repo, filePath, next, { etag: normalizeEtag(doc.etag) });
+      if (w.ok) { updated.push(filePath); return; }
+      if (w.status !== 412) { failed.push(filePath); return; }
+      // 412 → doc changed under us; re-read and retry
+    }
+    failed.push(filePath);
+  });
+
+  return { ok: failed.length === 0, data: { updated, skipped, failed } };
 }
 
 export async function deleteSchedule(org, repo, eventFolder, scheduleId, affectedPaths = []) {

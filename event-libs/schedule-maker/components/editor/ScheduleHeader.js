@@ -3,6 +3,7 @@ import { html } from '../../htm-wrapper.js';
 import { useSchedulesData, useSchedulesOperations, useSchedulesUI } from '../../context/SchedulesContext.js';
 import { ScheduleURLUtility, validateSchedule } from '../../utils.js';
 import DeleteConfirmationModal from '../DeleteConfirmationModal.js';
+import UpdatePagesModal from '../UpdatePagesModal.js';
 
 export default function ScheduleHeader() {
   const { activeSchedule, hasUnsavedChanges } = useSchedulesData();
@@ -16,6 +17,7 @@ export default function ScheduleHeader() {
 
   const [isEditingScheduleTitle, setIsEditingScheduleTitle] = useState(false);
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
+  const [showUpdatePages, setShowUpdatePages] = useState(false);
 
   const handleDeleteClick = () => setShowDeleteConfirmation(true);
 
@@ -119,6 +121,14 @@ export default function ScheduleHeader() {
           </sp-icon>
           Copy link
         </sp-action-button>
+        <sp-action-button size="m" disabled=${hasUnsavedChanges} onclick=${() => setShowUpdatePages(true)} title="Update pages that embed this schedule">
+          <sp-icon slot="icon">
+            <svg width="20" height="20" viewBox="0 0 18 18" fill="currentColor">
+              <path d="M15.5,4H8.837L7.4,2.56A1.5,1.5,0,0,0,6.337,2.12H2.5A1.5,1.5,0,0,0,1,3.62V14.5A1.5,1.5,0,0,0,2.5,16h13A1.5,1.5,0,0,0,17,14.5v-9A1.5,1.5,0,0,0,15.5,4ZM12.06,10.62a3,3,0,0,1-5.06.9V12.5a.5.5,0,0,1-1,0v-2a.5.5,0,0,1,.5-.5h2a.5.5,0,0,1,0,1H7.66a2,2,0,0,0,3.46-.66.5.5,0,1,1,.94.28Z"/>
+            </svg>
+          </sp-icon>
+          Update pages
+        </sp-action-button>
         <sp-action-button size="m" onclick=${handleSave} disabled=${isUpdating || !hasUnsavedChanges} class=${hasUnsavedChanges ? 'sm-button--unsaved' : ''}>
           <sp-icon slot="icon">
             <svg width="20" height="21" viewBox="0 0 20 21" fill="currentColor">
@@ -135,6 +145,11 @@ export default function ScheduleHeader() {
       onConfirm=${handleDeleteConfirm} \
       scheduleTitle=${activeSchedule?.title} \
       scheduleId=${activeSchedule?.scheduleId} \
+    />
+    <${UpdatePagesModal} \
+      isOpen=${showUpdatePages} \
+      onClose=${() => setShowUpdatePages(false)} \
+      schedule=${activeSchedule} \
     />
   `;
 }

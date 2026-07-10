@@ -51,9 +51,11 @@ Each event lives in its own folder; the folder path is the **event folder** the 
   max2025/
     schedules-active.json    ← schedules referenced in ≥1 DA document
     schedules-draft.json     ← schedules not referenced anywhere yet
+    schedule-refs.json       ← reverse index (scheduleId → docs), rebuilt each sync
   max2026/
     schedules-active.json
     schedules-draft.json
+    schedule-refs.json
 ```
 
 > DA "sheets" are `.json` files served by `admin.da.live/source`. Each holds `{ ":type": "sheet", "data": [ ...rows ] }`.
@@ -101,6 +103,23 @@ Because references are created by humans pasting a link into a document — an a
 
 `createSchedule` always writes to the **draft** sheet; `updateSchedule` writes in place to whichever sheet the row currently lives in; `refreshScheduleStatus` re-scans a single schedule and moves it if needed.
 
+Sync also records a **reverse index** (`schedule-refs.json`: `scheduleId → [doc paths]`) used by the "Update pages" feature below.
+
+## Propagating edits to pages ("Update pages")
+
+The embedded `?schedule=<base64>` link is a **point-in-time snapshot** — at render time [decorate.js](../v1/utils/decorate.js) decodes it into the chrono-box block. So when you edit a schedule, docs that embed it still render the **old** snapshot until their link is rewritten.
+
+The **"Update pages"** action (in the editor header, next to Save) handles this:
+
+1. Reads the reverse index (`schedule-refs.json`) to list the docs that embed the schedule — instant, no scan.
+2. Shows a confirmation with the affected docs.
+3. On confirm, rewrites each doc's link (new base64 payload + refreshed link text) via `propagateScheduleToDocs`.
+
+Key properties:
+- **Source only — never publishes.** Writes go to `admin.da.live/source`, which updates the document source but does **not** preview or publish. Authors open each page and publish when ready. (The delete flow is likewise source-only.)
+- **Conditional + retried** — each doc write uses `If-Match` and retries on 412, same as the sheets.
+- **Stale-index-safe** — the button requires a saved schedule (disabled while there are unsaved changes, like Copy link) and each doc is re-checked before writing; a doc whose link was removed since the last sync is **skipped**, not failed. Because the index is only as fresh as the last sync, a link pasted *after* the last sync won't be listed until you Sync again — the modal says so.
+
 ## Concurrency & Data Integrity
 
 All writes are full-sheet read-modify-write operations. Without protection, a save racing a sync would silently clobber the other (last-write-wins). To prevent that, every write uses **ETag-based optimistic locking**.
@@ -140,7 +159,8 @@ The per-document `source` fetch is the sync bottleneck. Scanning is done with a 
 | **Epoch datetime input** | [BlockEditor](components/editor/BlockEditor.js) | Local-time picker synced with an epoch-ms field. |
 | **Excel import** | [SheetImporter](components/SheetImporter.js) | Imports schedules as drafts into the current event folder. |
 | **URL share** | [utils.js](utils.js) | Copies a base64-encoded schedule link for embedding in DA docs. |
-| **Delete flow** | [DeleteConfirmationModal](components/DeleteConfirmationModal.js) | Scans for referencing docs, warns that deletion strips links and publishes staged changes, then hard-deletes the row. |
+| **Update pages** | [UpdatePagesModal](components/UpdatePagesModal.js) | Rewrites the embedded link in referencing docs (from the reverse index) so pages reflect edits. Source only — no publish. |
+| **Delete flow** | [DeleteConfirmationModal](components/DeleteConfirmationModal.js) | Scans for referencing docs, warns, then removes the links (source only) and hard-deletes the row. |
 
 ## Access Control
 
@@ -198,7 +218,7 @@ event-libs/ (inner repo root — served locally)
     │   └── Schedules.js        # two-panel layout (Sidebar + Editor)
     └── components/
         ├── Sidebar.js  EventPicker.js  SearchInput.js  SheetImporter.js
-        ├── ScheduleEditor.js  Modal.js  *Modal.js
+        ├── ScheduleEditor.js  Modal.js  DeleteConfirmationModal.js  UpdatePagesModal.js  *Modal.js
         └── editor/
             ├── ScheduleHeader.js  BlockEditor.js  FragmentPathBrowser.js
 ```

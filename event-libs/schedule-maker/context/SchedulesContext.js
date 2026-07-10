@@ -8,6 +8,8 @@ import {
   deleteSchedule as deleteScheduleController,
   syncSchedules as syncSchedulesController,
   findScheduleReferences,
+  getScheduleRefs as getScheduleRefsController,
+  propagateScheduleToDocs,
 } from '../scripts/da-controller.js';
 import {
   processSchedules,
@@ -187,6 +189,34 @@ const SchedulesProvider = ({ children }) => {
     }
   }, [org, repo, eventFolder]);
 
+  // Reverse-index lookup: which docs embed this schedule (as of the last sync).
+  const getScheduleRefs = useCallback(
+    (scheduleId) => getScheduleRefsController(org, repo, eventFolder, scheduleId),
+    [org, repo, eventFolder],
+  );
+
+  // Rewrite the embedded schedule link in the given docs (source only, no publish).
+  // `schedule` is encoded as-is, matching ScheduleURLUtility (raw activeSchedule).
+  const propagateSchedule = useCallback(async (schedule, paths) => {
+    setToastError(null);
+    try {
+      const result = await propagateScheduleToDocs(org, repo, schedule, paths);
+      const { updated = [], failed = [] } = result.data || {};
+      if (!result.ok) {
+        setToastError(`Updated ${updated.length} page(s); ${failed.length} failed — please retry.`);
+      } else {
+        setToastSuccess(updated.length
+          ? `Updated ${updated.length} page(s) — source only, publish each to go live`
+          : 'No pages needed updating');
+      }
+      return result;
+    } catch (err) {
+      const msg = err.message || 'Failed to update pages';
+      setToastError(msg);
+      return { ok: false, error: msg };
+    }
+  }, [org, repo]);
+
   const updateScheduleLocally = useCallback((title) => {
     setToastError(null);
     setActiveScheduleState((prev) => {
@@ -270,6 +300,8 @@ const SchedulesProvider = ({ children }) => {
     deleteBlockLocally,
     discardChangesToActiveSchedule,
     findScheduleReferences: (scheduleId, scanPath) => findScheduleReferences(org, repo, scheduleId, scanPath),
+    getScheduleRefs,
+    propagateSchedule,
     syncSchedules,
   };
 
@@ -307,6 +339,8 @@ export const useSchedulesOperations = () => {
     deleteBlockLocally: ctx.deleteBlockLocally,
     discardChangesToActiveSchedule: ctx.discardChangesToActiveSchedule,
     findScheduleReferences: ctx.findScheduleReferences,
+    getScheduleRefs: ctx.getScheduleRefs,
+    propagateSchedule: ctx.propagateSchedule,
     syncSchedules: ctx.syncSchedules,
   };
 };

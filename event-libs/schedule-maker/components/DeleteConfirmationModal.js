@@ -74,7 +74,8 @@ export default function DeleteConfirmationModal({
           <div class="delete-confirmation__warning">
             <p class="delete-confirmation__warning-text">
               ⚠️ <strong>Warning:</strong> This schedule is embedded in ${affectedPaths.length} document(s).
-              Deleting it will remove those references and <strong>publish any staged changes</strong> on those pages.
+              Deleting it removes those references from the <strong>document source</strong> — the change
+              won't be live until you open and publish each page.
             </p>
             <ul class="delete-confirmation__affected-pages">
               ${affectedPaths.map((p) => html`<li key=${p}>${p}</li>`)}

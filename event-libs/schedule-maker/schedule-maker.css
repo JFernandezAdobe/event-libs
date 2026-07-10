@@ -735,6 +735,13 @@
   word-break: break-all;
 }
 
+.delete-confirmation__note {
+  margin: var(--sm-spacing-sm) 0 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--sm-color-text-secondary);
+}
+
 
 /* ==========================================================================
     Fragment Path Browser (fpb)
