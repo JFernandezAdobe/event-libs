@@ -1539,6 +1539,46 @@ describe('onProfile', () => {
     expect(block.querySelector('form input#firstName')).to.exist;
     expect(block.classList.contains('loading')).to.be.false;
   });
+
+  it('builds the RSVP form when the signed-out profile is already null before initialization', async () => {
+    initializeStub = sinon.stub(dictionaryManager, 'initialize').resolves();
+    const meta = document.createElement('meta');
+    meta.name = 'rsvp-config';
+    meta.content = JSON.stringify({
+      rsvpFormFields: [
+        { field: 'firstName', label: 'First Name', type: 'text', required: true, options: [] },
+      ],
+    });
+    document.head.append(meta);
+    metaRsvpConfig = meta;
+
+    const block = document.createElement('div');
+    block.classList.add('loading');
+    const eventHero = document.createElement('div');
+    eventHero.classList.add('loading');
+    const formContainer = document.createElement('div');
+    const formLink = document.createElement('a');
+    formLink.href = 'https://example.com/rsvp.json';
+    formContainer.append(formLink);
+    block.append(eventHero, formContainer);
+
+    BlockMediator.set('imsProfile', null);
+    BlockMediator.set('eventData', { inviteOnly: false });
+    await onProfile({
+      block,
+      eventHero,
+      formContainer,
+      form: formLink,
+      terms: document.createElement('div'),
+    }, null);
+
+    for (let attempt = 0; attempt < 20 && block.classList.contains('loading'); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(block.querySelector('form input#firstName')).to.exist;
+    expect(block.classList.contains('loading')).to.be.false;
+  });
 });
 
 describe('addTerms', () => {

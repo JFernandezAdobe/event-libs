@@ -1291,7 +1291,7 @@ export async function onProfile(bp, formData) {
     }
   };
 
-  if (profile) {
+  if (profile !== undefined) {
     handleProfile(profile);
   } else {
     const unsubscribe = BlockMediator.subscribe('imsProfile', ({ newValue }) => {
